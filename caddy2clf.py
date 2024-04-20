@@ -3,53 +3,78 @@
 # caddy2clf - convert caddy json web logs to Common Log Format
 # CLF: host ident authuser date request status bytes
 
+import argparse
 import datetime
 import json
 import signal
 import sys
 import select
+import shlex
+import subprocess
 import time
+import typing
 
-reading_log = True
+hup_received = False
 
-def handler(signum, frame):
-	global reading_log
+def handler(signum, frame) -> None:
+	'''handle HUP signals'''
+	global hup_received
 	signame = signal.Signals(signum).name
 	print(f'Signal handler called with signal {signame} ({signum})')
-	reading_log = False
+	hup_received = True
 
 
-def hyphen_if_empty(field):
+def getargs() -> argparse.Namespace:
+    '''get CLI args'''
+    parser = argparse.ArgumentParser(description='Convert Caddy logs to CLF')
+    parser.add_argument('-o', '--outputfilename', help='Output filename')
+    parser.add_argument('-i', '--inputpipe', help='Input pipe (default = STDIN)')
+    return parser.parse_args()
+
+
+def open_pipe(cmdline: str):
+	'''return pipe to passed cmdline'''
+	cmdargs = shlex.split(cmdline)
+	ps = subprocess.Popen(cmdargs, stdout=subprocess.PIPE)
+	return ps.stdout
+
+def hyphen_if_empty(field: str) -> str:
 	"""replace empty string with hyphen"""
 	if field == '':
 		return '-'
 	return field
 
 
-def epoch_to_strftime(epoch_time):
+def epoch_to_strftime(epoch_time: float) -> str:
 	log_ts = datetime.datetime.fromtimestamp(epoch_time)
 	return log_ts.strftime("%d/%b/%Y:%H:%M:%S %z")
 
 
-def buildline(logdata):
-	request = '"%s %s %s"' % (logdata['request']['method'], logdata['request']['uri'], logdata['request']['proto'])
+def buildline(logdata: dict) -> str:
+	'''convert caddy dict to CLF str'''
+	request = '"%s %s %s"' % (logdata['request']['method'], logdata['request']['uri'],
+							  logdata['request']['proto'])
 	# set ident to -
-	logfields = (logdata['request']['client_ip'], '-', logdata['user_id'], epoch_to_strftime(logdata['ts']),
+	logfields = (logdata['request']['client_ip'], '-', logdata['user_id'],
+				 epoch_to_strftime(logdata['ts']),
 				 request, str(logdata['status']), str(logdata['size']))
 	logfields = (hyphen_if_empty(field) for field in logfields)
 	logline = ' '.join(logfields)
 	return logline
 
 
-def process_logs(outfilename: str):
+def process_logs(inputpipe: typing.TextIO, outfilename: str) -> None:
 	"""process stdin caddy json logs"""
-	global reading_log
+	global hup_received
 	outfile = None
+	reading_log = True
 	while reading_log:
 		if outfilename and outfile is None:
 			outfile = open(outfilename, "a")
-		while sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-			line = sys.stdin.readline()
+		while inputpipe in select.select([inputpipe], [], [], 0)[0]:
+			line = inputpipe.readline()
+			if inputpipe is not sys.stdin:
+				line = line.decode("utf-8")
 			if line == '':
 				# stdin closed, exit
 				reading_log = False
@@ -66,27 +91,27 @@ def process_logs(outfilename: str):
 				outfile.write("%s\n" % logline)
 			else:
 				print(logline)
-			if not reading_log:
-				# HUP received
+			if hup_received:
+				if outfile is not None:
+					# print('closing %s' % outfilename)  # DEBUG
+					outfile.close()
+					outfile = None
+					hup_received = False
 				break
 		else:
 			# waiting on data, sleep & try again
 			time.sleep(1)
-			print('something else')   # DEBUG
-			if not reading_log and outfile is not None:
-				# close output file
-				print('closing %s' % outfilename)  # DEBUG
-				outfile.close()
-				outfile = None
+			# print('something else')   # DEBUG
 
 
 def main():
 	signal.signal(signal.SIGHUP, handler)
-	try:
-		outfilename = sys.argv[1]
-	except IndexError:
-		outfilename = None
-	process_logs(outfilename)
+	args = getargs()
+	if args.inputpipe is None:
+		inputpipe = sys.stdin
+	else:
+		inputpipe = open_pipe(args.inputpipe)
+	process_logs(inputpipe, args.outputfilename)
 
 
 if __name__ == '__main__':
