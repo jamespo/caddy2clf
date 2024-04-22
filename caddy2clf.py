@@ -16,7 +16,7 @@ import typing
 
 hup_received = False
 
-def handler(signum, frame) -> None:
+def handler(signum, _) -> None:
 	'''handle HUP signals'''
 	global hup_received
 	signame = signal.Signals(signum).name
@@ -32,11 +32,12 @@ def getargs() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def open_pipe(cmdline: str):
+def open_pipe(cmdline: str) -> typing.TextIO:
 	'''return pipe to passed cmdline'''
 	cmdargs = shlex.split(cmdline)
 	ps = subprocess.Popen(cmdargs, stdout=subprocess.PIPE)
 	return ps.stdout
+
 
 def hyphen_if_empty(field: str) -> str:
 	"""replace empty string with hyphen"""
