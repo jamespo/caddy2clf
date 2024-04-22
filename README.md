@@ -1,6 +1,8 @@
 caddy2clf
 =========
 
+Convert Caddy webserver JSON log files to Common Log Format 
+
 Usage
 =====
 
