@@ -1,119 +1,112 @@
-#!/bin/env python3
-
-# caddy2clf - convert caddy json web logs to Common Log Format
-# CLF: host ident authuser date request status bytes
+#!/usr/bin/env python3
 
 import argparse
 import datetime
 import json
+import shlex
 import signal
 import sys
 import select
-import shlex
 import subprocess
-import time
-import typing
 
-hup_received = False
+def handle_sig_hup(_, __):
+	"""
+	Closes the global log file and sets it to None when a SIGHUP signal is received.
 
-def handler(signum, _) -> None:
-	'''handle HUP signals'''
-	global hup_received
-	signame = signal.Signals(signum).name
-	print(f'Signal handler called with signal {signame} ({signum})')
-	hup_received = True
+	Parameters:
+	- _: a placeholder for the first signal parameter (unused)
+	- __: a placeholder for the second signal parameter (unused)
 
+	Returns:
+	None
+	"""
+	global log_file
+	log_file.close()
+	log_file = None
 
-def getargs() -> argparse.Namespace:
-    '''get CLI args'''
-    parser = argparse.ArgumentParser(description='Convert Caddy logs to CLF')
-    parser.add_argument('-o', '--outputfilename', help='Output filename')
-    parser.add_argument('-i', '--inputpipe', help='Input pipe (default = STDIN)')
-    return parser.parse_args()
+def get_args():
+	"""
+	Parses command line arguments and returns the parsed arguments.
 
+	:return: The parsed command line arguments.
+	"""
+	parser = argparse.ArgumentParser(description='Convert Caddy logs to CLF')
+	parser.add_argument('-o', '--output-file',
+						help='Output filename')
+	parser.add_argument('-i', '--input-pipe',
+						help='Input pipe (default=STDIN)')
+	return parser.parse_args()
 
-def open_pipe(cmdline: str) -> typing.TextIO:
-	'''return pipe to passed cmdline'''
-	cmdargs = shlex.split(cmdline)
-	ps = subprocess.Popen(cmdargs, stdout=subprocess.PIPE)
-	return ps.stdout
+def open_pipe(command):
+	"""
+	Opens a pipe to a command and returns the stdout of the subprocess.
+	
+	:param command: The command to execute.
+	:return: The stdout of the subprocess.
+	"""
+	return subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE).stdout
 
+def format_line(logdata):
+	"""
+	Formats a log line into a string in Common Log Format.
 
-def hyphen_if_empty(field: str) -> str:
-	"""replace empty string with hyphen"""
-	if field == '':
-		return '-'
-	return field
-
-
-def epoch_to_strftime(epoch_time: float) -> str:
-	log_ts = datetime.datetime.fromtimestamp(epoch_time)
-	return log_ts.strftime("%d/%b/%Y:%H:%M:%S %z")
-
-
-def buildline(logdata: dict) -> str:
-	'''convert caddy dict to CLF str'''
+	:param logdata: A dictionary containing the log data.
+	:type logdata: dict
+	:return: A string representing the log line in Common Log Format.
+	:rtype: str
+	"""
 	request = '"%s %s %s"' % (logdata['request']['method'], logdata['request']['uri'],
 							  logdata['request']['proto'])
-	# set ident to -
 	logfields = (logdata['request']['client_ip'], '-', logdata['user_id'],
-				 epoch_to_strftime(logdata['ts']),
+				 datetime.datetime.fromtimestamp(logdata['ts']).strftime("%d/%b/%Y:%H:%M:%S %z"),
 				 request, str(logdata['status']), str(logdata['size']))
-	logfields = (hyphen_if_empty(field) for field in logfields)
-	logline = ' '.join(logfields)
-	return logline
+	return ' '.join(('-' if field == '' else field) for field in logfields)
 
+def process_logs(input_pipe, output_file):
+	"""
+	Process logs from an input pipe and write them to an output file.
 
-def process_logs(inputpipe: typing.TextIO, outfilename: str) -> None:
-	"""process stdin caddy json logs"""
-	global hup_received
-	outfile = None
+	:param input_pipe: The input pipe to read logs from.
+	:type input_pipe: file object
+	:param output_file: The output file to write logs to.
+	:type output_file: str
+	"""
+	global log_file
+	log_file = None
+	if output_file:
+		log_file = open(output_file, "a")
 	reading_log = True
 	while reading_log:
-		if outfilename and outfile is None:
-			outfile = open(outfilename, "a")
-		while inputpipe in select.select([inputpipe], [], [], 0)[0]:
-			line = inputpipe.readline()
-			if inputpipe is not sys.stdin:
+		if log_file is None and output_file is not None:
+			log_file = open(output_file, "a")
+		while input_pipe in select.select([input_pipe], [], [], 0)[0]:
+			line = input_pipe.readline()
+			if input_pipe is not sys.stdin:
 				line = line.decode("utf-8")
 			if line == '':
-				# stdin closed, exit
 				reading_log = False
 				break
 			elif line[0] != '{':
-				# not caddy JSON, skip
 				continue
 			try:
 				logdata = json.loads(line)
 			except json.decoder.JSONDecodeError:
 				continue
-			logline = buildline(logdata)
-			if outfile is not None:
-				outfile.write("%s\n" % logline)
+			logline = format_line(logdata)
+			if log_file is not None:
+				log_file.write("%s\n" % logline)
 			else:
 				print(logline)
-			if hup_received:
-				if outfile is not None:
-					# print('closing %s' % outfilename)  # DEBUG
-					outfile.close()
-					outfile = None
-					hup_received = False
-				break
-		else:
-			# waiting on data, sleep & try again
-			time.sleep(1)
-			# print('something else')   # DEBUG
-
 
 def main():
-	signal.signal(signal.SIGHUP, handler)
-	args = getargs()
-	if args.inputpipe is None:
-		inputpipe = sys.stdin
+	signal.signal(signal.SIGHUP, handle_sig_hup)
+	args = get_args()
+	if args.input_pipe is None:
+		input_pipe = sys.stdin
 	else:
-		inputpipe = open_pipe(args.inputpipe)
-	process_logs(inputpipe, args.outputfilename)
-
+		input_pipe = open_pipe(args.input_pipe)
+	process_logs(input_pipe, args.output_file)
 
 if __name__ == '__main__':
     main()
+
