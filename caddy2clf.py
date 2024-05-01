@@ -3,10 +3,10 @@
 import argparse
 import datetime
 import json
-import shlex
 import signal
 import sys
 import select
+import shlex
 import subprocess
 
 def handle_sig_hup(_, __):
@@ -44,7 +44,7 @@ def open_pipe(command):
 	:param command: The command to execute.
 	:return: The stdout of the subprocess.
 	"""
-	return subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE).stdout
+	return subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE)
 
 def format_line(logdata):
 	"""
@@ -97,15 +97,31 @@ def process_logs(input_pipe, output_file):
 				log_file.write("%s\n" % logline)
 			else:
 				print(logline)
+	if log_file is not None:
+		log_file.close()
 
 def main():
+	"""
+	The main function that serves as the entry point of the program.
+
+	This function performs the following steps:
+	1. Sets up a signal handler for the SIGHUP signal by calling the `handle_sig_hup` function.
+	2. Parses the command line arguments by calling the `get_args` function and stores the result in the `args` variable.
+	3. Checks if the `input_pipe` argument is `None`. If it is `None`, assigns `sys.stdin` to the `input_pipe` variable. Otherwise, calls the `open_pipe` function with the `args.input_pipe` argument and assigns the result to the `input_pipe` variable.
+	4. Calls the `process_logs` function with the `input_pipe` and `args.output_file` arguments.
+
+	This function does not have any parameters.
+
+	This function does not return any values.
+	"""
 	signal.signal(signal.SIGHUP, handle_sig_hup)
 	args = get_args()
 	if args.input_pipe is None:
-		input_pipe = sys.stdin
+		process_logs(sys.stdin, args.output_file)
 	else:
 		input_pipe = open_pipe(args.input_pipe)
-	process_logs(input_pipe, args.output_file)
+		process_logs(input_pipe.stdout, args.output_file)
+		# input_pipe.close()
 
 if __name__ == '__main__':
     main()
